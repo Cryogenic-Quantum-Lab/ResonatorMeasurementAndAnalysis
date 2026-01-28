@@ -7,6 +7,8 @@ Created on Thu Oct 30 14:44:52 2025
 This script was made to take a segmented sweep of code, and analyze it
 """
 
+#This is comment that Stephanie is making to see if git is working as it should
+
 # Importing all the necessary libraries
 import pyvisa as visa
 import numpy as np

@@ -7,7 +7,28 @@ Created on Thu Oct 30 14:44:52 2025
 This script was made to take a segmented sweep of code, and analyze it
 """
 
-#This is comment that Stephanie is making to see if git is working as it should
+###### Connecting to remote attenuator: make sure to fill these requirements:
+#   1: Python.Net (pip install pythonnet)
+#   2: Mini-Circuits' DLL API file (mcl_RUDAT_NET45.dll)
+#      https://www.minicircuits.com/softwaredownload/mcl_RUDAT64_DLL.zip
+#      Note: - Windows may block the DLL file after download as a precaution
+#            - Right-click on the file, select properties, click "Unblock" (if shown)
+
+import clr # pythonnet
+clr.AddReference('mcl_RUDAT_NET45')      # Reference the DLL
+
+from mcl_RUDAT_NET45 import USB_RUDAT
+att = USB_RUDAT()   # Create an instance of the USB control class
+
+Status = att.Connect()       # Connect
+
+if Status > 0:
+    continue
+
+else:
+    print ("Could not connect to attenuator.")
+
+
 
 # Importing all the necessary libraries
 import pyvisa as visa
@@ -17,6 +38,7 @@ import os
 import pandas as pd
 import csv
 import time
+
 
 startTime = time.perf_counter()
 # Change this variable to the address of your instrument
@@ -31,7 +53,7 @@ timeout = 43200000 #timeout after 12 hours
 session.timeout = timeout
 startTime = time.perf_counter()
 
-#This will be the startup function to setup the VNA, was made seperatly for testing purposes
+#This will be the startup function to setup the VNA, was made separately for testing purposes
 def startup():
     # Command to preset the instrument and deletes the default trace, measurement, and window
     session.write("SYST:FPR")
@@ -152,20 +174,25 @@ magn_offset = 2
 directory = (r"C:\Users\Lab_Admin\OneDrive\Desktop\Shared Data\Stephanie_NorthwesternResonators\Resonator 2")
 file_name = ("test")
 
+power_sequence = [5, 0, -5, -10, -15, -20, -25, -30, -35, -40,
+                  -5, -10, -15, -20, -25, -30, -35] # First batch to -40 for att -17, then -57
+att = -17 # Starts at -17 for first batch, will change to -57 later in code
+
 #Code start =====================================================================================================================
 startup() #start up settings
 
-#created a list of frequencies for putting into final output list and putting into segment table
-#'''
-for powow in range(0,6):
-    powerLevel = 0 - powow*5
-    #powerLevelname = -68 - powow*5
-    powerLevelname = -99 - powow*5
-    average = 1
+Status = att.Send_SCPI(f":SETATT={att}", "") # Set attenuation
+#Responses = att.Send_SCPI(":ATT?", "")
+#print (str(Responses[1]))
+
+ave_counter = 0
+average = [20,20,20,20,20,20,20,20,20,20,20,20,20,80,320,1280,4000]
+for powerLevel in power_sequence:
+    powerLevelname = att - 68 + powerLevel
     
     res_counter = 1    
     for f in res_freq:
-        paraSet(bandwidth, average, powerLevel, edelay, phase_offset[res_counter-1], magn_slope, magn_offset)
+        paraSet(bandwidth, average[ave_counter], powerLevel, edelay, phase_offset[res_counter-1], magn_slope, magn_offset)
         startTimeLocal = time.perf_counter()
         file_name = (f"Resonator_{res_counter}_")
         #initialize freq list
@@ -236,122 +263,21 @@ for powow in range(0,6):
         print(f'Total time so far to run this measurement: {elapsed:.3f} secounds\n')
         endTimeLocal = time.perf_counter()
         elapsedLocal = endTimeLocal - startTimeLocal
-        print(f"Time taken to measure {file_name}{powerLevelname}dBm: {elapsedLocal:.3f} secounds")
-        print('-------------------------------------------')
-        res_counter += 1
-    
-        
-#making a seperate folder to create plots of all saved data
-for entry in os.scandir(fr"{directory}"):  
-    if entry.is_file():  # check if it's a file
-        df = pd.read_csv(entry)
-        plt.plot(df['frequency'], df['dB'], marker='o')
-        plt.xlabel('Frequency')
-        plt.ylabel('dB')
-        plt.title(os.path.splitext(entry.name)[0])
-        plt.grid(True)
-        print(f"Processing: {entry.name}")
-        
-        #make directory to save file
-        # Create the directory if it doesn't exist
-        plots_dir = os.path.join(directory, "plots")
-        if not os.path.exists(plots_dir):
-            os.makedirs(plots_dir)
-
-        # Save plot
-        filename = os.path.splitext(entry.name)[0] + '.png'
-        full_path = os.path.join(plots_dir, filename)
-        plt.savefig(full_path)
-        plt.close()  # Close the figure to avoid overlap
-        
-'''
-#This whole repeat is just for the lower levels of power
-ave_counter = 0
-average = [10,20,40,75,300,600,1200,2400]
-for powow in range(0,8):
-    powerLevel = 0 - powow*5
-    powerLevelname = -130 - powow*5
-    
-    res_counter = 1
-    for f in res_freq:
-        paraSet(bandwidth, average[ave_counter], powerLevel, edelay, phase_offset[res_counter-1], magn_slope, magn_offset)
-        startTimeLocal = time.perf_counter()
-        file_name = (f"Resonator_{res_counter}_")
-        #initialize freq list
-        freq_list = np.empty((0,))
-        #make a list of omega
-        omega = np.linspace(-(24*np.pi)/25, (24*np.pi)/25, tau_split_count)
-        #create a new frequency for each omega and add to list
-        for t in omega:
-            freq = f*(1+(1/(2*assumed_Qtot))*np.tan(t/2))
-            freq_list = np.append(freq_list,freq)
-        #sort from lowest to highest
-        freq_list = np.sort(freq_list)
-        
-        
-        #start adding into segment table
-        segments = []
-        for x in freq_list:    
-            segments.append(build_segment(1, x)) 
-        seg_data = ",".join(segments)
-        #adds segments made from frequency list to segment list
-        set_segment("SSTOP", tau_split_count, seg_data)
-        
-        
-        #start transfering data to csv and output etc
-        # Default Data Format is ASCII, we set data taking format here, this is the fastest setting and if you want to change it, refer to command tree
-        session.write("FORM:DATA ASCII,0")
-        # Ask for the data from the sweep, pick one of the locations to read
-        #If you want more measurements, I reccomend to add more myMeas# and follow the coding convention 
-        myMeas1 = session.query_ascii_values("CALC1:MEAS1:DATA:FDATA?", container=np.array)
-        myMeas2 = session.query_ascii_values("CALC1:MEAS2:DATA:FDATA?", container=np.array)                
-         
-        #Here we attempt to put all the data into an array
-        finalMeas = []
-        
-        #Adds columns of data to print to csv file
-        #adds frequency
-        finalMeas.append(freq_list)
-        
-        #Based on the type of form chosen in getting data, we add them as columns to final Meas
-        finalMeas.append(myMeas1)
-        finalMeas.append(myMeas2)
-        finalMeas = np.transpose(finalMeas)
-        
-        #prints the data in code, can comment out
-        #print(finalMeas)
-        
-        # Create the full file path
-        file_path = os.path.join(directory, file_name)
-        csv_file_path = os.path.join(directory, file_name+str(powerLevelname)+"dBm_60VARAT.csv")
-        
-        # Ensure the directory exists, if not, create it
-        if not os.path.exists(directory):
-           os.makedirs(directory)
-        
-        # Convert the ndarray to a DataFrame
-        #Because we wanted to convert to csv, using the panda library is an easy way to do so and we did
-        df = pd.DataFrame(finalMeas, columns=['frequency', 'dBm', 'phase'])
-        
-        # Save the DataFrame to a CSV file
-        df.to_csv(csv_file_path, index=False)
-        #prints file path confirmation
-        print('Measurement successful. CSV file saved at:')
-        print(csv_file_path+"\n")
-        
-        #Prints the elaspsed time for the measurement. Useful when we plan our measurements
-        endTime = time.perf_counter()
-        elapsed = endTime - startTime
-        print(f'Total time so far to run this measurement: {elapsed:.3f} secounds\n')
-        endTimeLocal = time.perf_counter()
-        elapsedLocal = endTimeLocal - startTimeLocal
         print(f"Time taken to measure {file_name}{powerLevelname}dBm: {elapsedLocal:.3f} secounds\n")
         print(f"average is {average[ave_counter]}")
         print(f"power is {powerLevel}")
         print('-------------------------------------------')
         res_counter += 1
+
     ave_counter = ave_counter + 1
 
+    if powerLevel == -40: # End of first batch
+        att = -57
+        Status = att.Send_SCPI(f":SETATT={att}", "") 
+        #Responses = att.Send_SCPI(":ATT?", "")
+        #print (str(Responses[1]))
+
+        
 #making a seperate folder to create plots of all saved data
 for entry in os.scandir(fr"{directory}"):  
     if entry.is_file():  # check if it's a file
@@ -375,5 +301,4 @@ for entry in os.scandir(fr"{directory}"):
         plt.savefig(full_path)
         plt.close()  # Close the figure to avoid overlap
         
-'''
-        
+att.Disconnect() # disconnects w/attenuator, not sure if this is important

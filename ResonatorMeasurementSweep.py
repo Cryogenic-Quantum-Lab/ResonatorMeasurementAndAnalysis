@@ -14,19 +14,7 @@ This script was made to take a segmented sweep of code, and analyze it
 #      Note: - Windows may block the DLL file after download as a precaution
 #            - Right-click on the file, select properties, click "Unblock" (if shown)
 
-import clr # pythonnet
-clr.AddReference('mcl_RUDAT_NET45')      # Reference the DLL
 
-from mcl_RUDAT_NET45 import USB_RUDAT
-att = USB_RUDAT()   # Create an instance of the USB control class
-
-Status = att.Connect()       # Connect
-
-if Status > 0:
-    continue
-
-else:
-    print ("Could not connect to attenuator.")
 
 
 
@@ -42,7 +30,7 @@ import time
 
 startTime = time.perf_counter()
 # Change this variable to the address of your instrument
-VISA_ADDRESS = 'TCPIP0::QuCAT_Lab::hislip_PXI10_CHASSIS1_SLOT1_INDEX0::INSTR'
+VISA_ADDRESS = 'TCPIP0::Cryostat-Computer::hislip_PXI10_CHASSIS1_SLOT1_INDEX0::INSTR'
 
 # Create a connection (session) to the instrument
 resourceManager = visa.ResourceManager()
@@ -53,7 +41,7 @@ timeout = 43200000 #timeout after 12 hours
 session.timeout = timeout
 startTime = time.perf_counter()
 
-#This will be the startup function to setup the VNA, was made separately for testing purposes
+#This will be the startup function to setup the VNA, was made seperatly for testing purposes
 def startup():
     # Command to preset the instrument and deletes the default trace, measurement, and window
     session.write("SYST:FPR")
@@ -155,150 +143,176 @@ def build_segment(points, freq):
     return f"1,{points},{freq},{freq}"    
 
 
-#input parameters ==================================================================================================================
-res_freq = [5.791241319E9,5.835566733E9,5.922292790E9,6.321501215E9,6.370486998E9,6.400447515E9,6.425018282E9,6.479538603E9] #these are centers of resonances
-phase_offset = [360-345,360-350,360-20,360-15,360-0,360-10, 360-0, 360-0]
+#### THIS IS THE MAIN FUNCTION THAT COLLECTS DATA!
+def remote_sweep(res_freq, phase_offset, tau_split_count, assumed_Qtot, bandwidth, edelay, magn_slope, magn_offset, directory, file_name, power_sequence, attn, average):
+    # This section is to connect to the remote attenuator
+    import clr # pythonnet
+    clr.AddReference('mcl_RUDAT_NET45')      # Reference the DLL
 
+    from mcl_RUDAT_NET45 import USB_RUDAT
+    att = USB_RUDAT()   # Create an instance of the USB control class
+
+    Status = att.Connect()       # Connect
+
+    if Status[0] <= 0:
+        print ("Could not connect to attenuator.")
+        exit
+
+
+    
+    Status = att.Send_SCPI(f":SETATT={attn}", "") # Set attenuation to first attenuation value
+    
+
+    ave_counter = 0
+    for powerLevel in power_sequence:
+        powerLevelname = powerLevel - 68 - attn
+
+        res_counter = 1    
+        for f in res_freq:
+            paraSet(bandwidth, average[ave_counter], powerLevel, edelay, phase_offset[res_counter-1], magn_slope[res_counter-1], magn_offset)
+            adjusted_Qtot = assumed_Qtot[res_counter-1] # This is the Qtot we will use to calculate the segment frequencies, can be changed to be different from the assumed Qtot if we want
+            startTimeLocal = time.perf_counter()
+            file_name = (f"Resonator_{res_counter}_")
+            #initialize freq list
+            freq_list = np.empty((0,))
+            #make a list of omega
+            omega = np.linspace(-(24*np.pi)/25, (24*np.pi)/25, tau_split_count)
+            #create a new frequency for each omega and add to list
+            for t in omega:
+                freq = f*(1+(1/(2*adjusted_Qtot))*np.tan(t/2))
+                freq_list = np.append(freq_list,freq)
+            #sort from lowest to highest
+            freq_list = np.sort(freq_list)
+                
+            
+            #start adding into segment table
+            segments = []
+            for x in freq_list:    
+                segments.append(build_segment(1, x)) 
+            seg_data = ",".join(segments)
+            #adds segments made from frequency list to segment list
+            set_segment("SSTOP", tau_split_count, seg_data)
+            
+            
+            #start transfering data to csv and output etc
+            # Default Data Format is ASCII, we set data taking format here, this is the fastest setting and if you want to change it, refer to command tree
+            session.write("FORM:DATA ASCII,0")
+            # Ask for the data from the sweep, pick one of the locations to read
+            #If you want more measurements, I reccomend to add more myMeas# and follow the coding convention 
+            myMeas1 = session.query_ascii_values("CALC1:MEAS1:DATA:FDATA?", container=np.array)
+            myMeas2 = session.query_ascii_values("CALC1:MEAS2:DATA:FDATA?", container=np.array)                
+            
+            #Here we attempt to put all the data into an array
+            finalMeas = []
+            
+            #Adds columns of data to print to csv file
+            #adds frequency
+            finalMeas.append(freq_list)
+            
+            #Based on the type of form chosen in getting data, we add them as columns to final Meas
+            finalMeas.append(myMeas1)
+            finalMeas.append(myMeas2)
+            finalMeas = np.transpose(finalMeas)
+            
+            #prints the data in code, can comment out
+            #print(finalMeas)
+            
+            # Create the full file path
+            file_path = os.path.join(directory, file_name)
+            csv_file_path = os.path.join(directory, file_name+str(powerLevelname)+"dBm_30VARAT.csv")
+            
+            # Ensure the directory exists, if not, create it
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+            
+            # Convert the ndarray to a DataFrame
+            #Because we wanted to convert to csv, using the panda library is an easy way to do so and we did
+            df = pd.DataFrame(finalMeas, columns=['frequency', 'dBm', 'phase'])
+            
+            # Save the DataFrame to a CSV file
+            df.to_csv(csv_file_path, index=False)
+            #prints file path confirmation
+            print('Measurement successful. CSV file saved at:')
+            print(csv_file_path+"\n")
+            
+            #Prints the elaspsed time for the measurement. Useful when we plan our measurements
+            endTime = time.perf_counter()
+            elapsed = endTime - startTime
+            print(f'Total time so far to run this measurement: {elapsed:.3f} secounds\n')
+            endTimeLocal = time.perf_counter()
+            elapsedLocal = endTimeLocal - startTimeLocal
+            print(f"Time taken to measure {file_name}{powerLevelname}dBm: {elapsedLocal:.3f} secounds\n")
+            print(f"average is {average[ave_counter]}")
+            print(f"power is {powerLevel}")
+            print(f"attenuation is -{attn}")
+            print('-------------------------------------------')
+            res_counter += 1
+
+        ave_counter = ave_counter + 1
+
+        if powerLevel == -40: # End of first batch
+            attn = 57
+            Status = att.Send_SCPI(f":SETATT={attn}", "") 
+            #Responses = att.Send_SCPI(":ATT?", "")
+            #print (str(Responses[1]))
+
+            
+    #making a seperate folder to create plots of all saved data
+    for entry in os.scandir(fr"{directory}"):  
+        if entry.is_file():  # check if it's a file
+            df = pd.read_csv(entry)
+            plt.plot(df['frequency'], df['dB'], marker='o')
+            plt.xlabel('Frequency')
+            plt.ylabel('dB')
+            plt.title(os.path.splitext(entry.name)[0])
+            plt.grid(True)
+            print(f"Processing: {entry.name}")
+            
+            #make directory to save file
+            # Create the directory if it doesn't exist
+            plots_dir = os.path.join(directory, "plots")
+            if not os.path.exists(plots_dir):
+                os.makedirs(plots_dir)
+
+            # Save plot
+            filename = os.path.splitext(entry.name)[0] + '.png'
+            full_path = os.path.join(plots_dir, filename)
+            plt.savefig(full_path)
+            plt.close()  # Close the figure to avoid overlap
+            
+    att.Disconnect() # disconnects w/attenuator, not sure if this is important
+
+#input parameters ==================================================================================================================
+#res_freq = [3.805798615E9, 4.142051723E9, 4.451010129E9, 4.7334244E9, 5.09801776E9, 5.45630723E9, 5.80264483E9, 6.12921038E9] #these are centers of resonances
+res_freq = [4.142051723E9,4.451010129E9, 4.7334244E9, 6.12921038E9] # RESONATORS 2,3,4,8 ,
+phase_offset = [360-125, 360-75, 360-10, 360-100] # RESONATORS 2,3,4,8  
+#phase_offset = [360-70, 360-125, 360-75, 360-10, 360-180, 360-175, 360-100, 360-100]
 
 tau_split_count = 51 #essentially the num of segments
-assumed_Qtot = 200000 #together with tau split cout detmermines our calculations for the spread of our segmented sweep
+assumed_Qtot = [200000,100000,100000,200000] #together with tau split cout detmermines our calculations for the spread of our segmented sweep
+#assumed_Qtot = [200000, 200000, 200000, 200000, 200000, 200000, 200000, 200000] #together with tau split cout detmermines our calculations for the spread of our segmented sweep
 
 bandwidth = 0.01 #in khz
 
 
-edelay = 57.4
-magn_slope = 0
-magn_offset = 2
+edelay = 56
+magn_slope = [-10.9, -10, -9.1, -6.2] # RESONATORS 2,3,4,8 
+#magn_slope = [-11.5, -10.9 ,-10, -9.1, -8.2, -7.4, -6.8, -6.2]
+magn_offset = 64
 
 
-directory = (r"C:\Users\Lab_Admin\OneDrive\Desktop\Shared Data\Stephanie_NorthwesternResonators\Resonator 2")
-file_name = ("test")
+directory = (r"C:\Users\cryoq\Documents\Resonator_Measurements\ResonatorMeasurementAndAnalysis\400 Averaging")
+file_name = ("test") #doesnt matter?
 
-power_sequence = [5, 0, -5, -10, -15, -20, -25, -30, -35, -40,
-                  -5, -10, -15, -20, -25, -30, -35] # First batch to -40 for att -17, then -57
-att = -17 # Starts at -17 for first batch, will change to -57 later in code
+attn = 57
+power_sequence = [-30] 
+#power_sequence = [5, 0, -5, -10, -15, -20, -25, -30, -35, -40,
+#                  -5, -10, -15, -20, -25, -30, -35] # First batch to -40 for att -17, then -57
+#attn = 17 # Starts at -17 for first batch, will change to -57 later in code
+average = [20**2]
+#average = [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+# Just change the file and average
 
 #Code start =====================================================================================================================
 startup() #start up settings
-
-Status = att.Send_SCPI(f":SETATT={att}", "") # Set attenuation
-#Responses = att.Send_SCPI(":ATT?", "")
-#print (str(Responses[1]))
-
-ave_counter = 0
-average = [20,20,20,20,20,20,20,20,20,20,20,20,20,80,320,1280,4000]
-for powerLevel in power_sequence:
-    powerLevelname = att - 68 + powerLevel
-    
-    res_counter = 1    
-    for f in res_freq:
-        paraSet(bandwidth, average[ave_counter], powerLevel, edelay, phase_offset[res_counter-1], magn_slope, magn_offset)
-        startTimeLocal = time.perf_counter()
-        file_name = (f"Resonator_{res_counter}_")
-        #initialize freq list
-        freq_list = np.empty((0,))
-        #make a list of omega
-        omega = np.linspace(-(24*np.pi)/25, (24*np.pi)/25, tau_split_count)
-        #create a new frequency for each omega and add to list
-        for t in omega:
-            freq = f*(1+(1/(2*assumed_Qtot))*np.tan(t/2))
-            freq_list = np.append(freq_list,freq)
-        #sort from lowest to highest
-        freq_list = np.sort(freq_list)
-        
-        
-        #start adding into segment table
-        segments = []
-        for x in freq_list:    
-            segments.append(build_segment(1, x)) 
-        seg_data = ",".join(segments)
-        #adds segments made from frequency list to segment list
-        set_segment("SSTOP", tau_split_count, seg_data)
-        
-        
-        #start transfering data to csv and output etc
-        # Default Data Format is ASCII, we set data taking format here, this is the fastest setting and if you want to change it, refer to command tree
-        session.write("FORM:DATA ASCII,0")
-        # Ask for the data from the sweep, pick one of the locations to read
-        #If you want more measurements, I reccomend to add more myMeas# and follow the coding convention 
-        myMeas1 = session.query_ascii_values("CALC1:MEAS1:DATA:FDATA?", container=np.array)
-        myMeas2 = session.query_ascii_values("CALC1:MEAS2:DATA:FDATA?", container=np.array)                
-         
-        #Here we attempt to put all the data into an array
-        finalMeas = []
-        
-        #Adds columns of data to print to csv file
-        #adds frequency
-        finalMeas.append(freq_list)
-        
-        #Based on the type of form chosen in getting data, we add them as columns to final Meas
-        finalMeas.append(myMeas1)
-        finalMeas.append(myMeas2)
-        finalMeas = np.transpose(finalMeas)
-        
-        #prints the data in code, can comment out
-        #print(finalMeas)
-        
-        # Create the full file path
-        file_path = os.path.join(directory, file_name)
-        csv_file_path = os.path.join(directory, file_name+str(powerLevelname)+"dBm_30VARAT.csv")
-        
-        # Ensure the directory exists, if not, create it
-        if not os.path.exists(directory):
-           os.makedirs(directory)
-        
-        # Convert the ndarray to a DataFrame
-        #Because we wanted to convert to csv, using the panda library is an easy way to do so and we did
-        df = pd.DataFrame(finalMeas, columns=['frequency', 'dBm', 'phase'])
-        
-        # Save the DataFrame to a CSV file
-        df.to_csv(csv_file_path, index=False)
-        #prints file path confirmation
-        print('Measurement successful. CSV file saved at:')
-        print(csv_file_path+"\n")
-        
-        #Prints the elaspsed time for the measurement. Useful when we plan our measurements
-        endTime = time.perf_counter()
-        elapsed = endTime - startTime
-        print(f'Total time so far to run this measurement: {elapsed:.3f} secounds\n')
-        endTimeLocal = time.perf_counter()
-        elapsedLocal = endTimeLocal - startTimeLocal
-        print(f"Time taken to measure {file_name}{powerLevelname}dBm: {elapsedLocal:.3f} secounds\n")
-        print(f"average is {average[ave_counter]}")
-        print(f"power is {powerLevel}")
-        print('-------------------------------------------')
-        res_counter += 1
-
-    ave_counter = ave_counter + 1
-
-    if powerLevel == -40: # End of first batch
-        att = -57
-        Status = att.Send_SCPI(f":SETATT={att}", "") 
-        #Responses = att.Send_SCPI(":ATT?", "")
-        #print (str(Responses[1]))
-
-        
-#making a seperate folder to create plots of all saved data
-for entry in os.scandir(fr"{directory}"):  
-    if entry.is_file():  # check if it's a file
-        df = pd.read_csv(entry)
-        plt.plot(df['frequency'], df['dB'], marker='o')
-        plt.xlabel('Frequency')
-        plt.ylabel('dB')
-        plt.title(os.path.splitext(entry.name)[0])
-        plt.grid(True)
-        print(f"Processing: {entry.name}")
-        
-        #make directory to save file
-        # Create the directory if it doesn't exist
-        plots_dir = os.path.join(directory, "plots")
-        if not os.path.exists(plots_dir):
-            os.makedirs(plots_dir)
-
-        # Save plot
-        filename = os.path.splitext(entry.name)[0] + '.png'
-        full_path = os.path.join(plots_dir, filename)
-        plt.savefig(full_path)
-        plt.close()  # Close the figure to avoid overlap
-        
-att.Disconnect() # disconnects w/attenuator, not sure if this is important
+remote_sweep(res_freq, phase_offset, tau_split_count, assumed_Qtot, bandwidth, edelay, magn_slope, magn_offset, directory, file_name, power_sequence, attn, average)

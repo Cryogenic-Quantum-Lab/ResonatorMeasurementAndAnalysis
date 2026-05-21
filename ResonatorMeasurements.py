@@ -228,7 +228,7 @@ def remote_sweep(res_freq, phase_offset, tau_split_count, assumed_Qtot, bandwidt
             #print(finalMeas)
             
             # Create the csv file path
-            csv_file_path = os.path.join(data_path, file_name+str(powerLevelname)+"dBm_30VARAT.csv")
+            csv_file_path = os.path.join(data_path, file_name+str(powerLevelname)+"dBm_"+{attn}+"VARAT.csv")
             
             # Ensure the directory exists, if not, create it
             if not os.path.exists(directory):
@@ -862,7 +862,7 @@ edelay = 56
 magn_slope = [-11.5, -10.9 ,-10, -9.1, -8.2, -7.4, -6.8, -6.2]
 magn_offset = 64
 
-average = [1,1,1,1,1,1,1,1,1,1,1,1,10,10,100,100,100] # Should be 17 power levels, so 17 averaging levels
+average = [10,10,10,10,10,10,10,10,10,10,10,5**2,10**2,15**2,20**2,25**2,30**2] # Should be 17 power levels, so 17 averaging levels
 
 directory = (r"C:\Users\cryoq\Documents\Resonator_Measurements\FINALTEST")
 dependency_directory = os.path.join(directory, "Dependencies")
@@ -874,6 +874,12 @@ power_sequence = [5, 0, -5, -10, -15, -20, -25, -30, -35, -40, # First batch at 
                   -5, -10, -15, -20, -25, -30, -35] # Second batch at attn -57
 
 # =============================================================================
+
+if len(res_freq) == len(phase_offset) == len(assumed_Qtot) == len(magn_slope) and len(average) == len(power_sequence):
+     print("Input parameter lengths are consistent.")
+else:
+    print("Error: Inconsistent input parameter lengths.")
+    exit()
 
 sys.path.append(dependency_directory) # Make sure all dependencies are in 'Dependencies' folder!
 startup()
